@@ -29,69 +29,59 @@ pub(crate) fn usb_manager() -> Result<&'static jni::objects::JObject<'static>, E
 }
 
 fn get_usb_manager() -> Result<jni::objects::GlobalRef, Error> {
-    let env = &mut jni_attach_vm().map_err(jerr)?;
-    let context = android_context();
+    jni_with_env(|env| {
+        let context = android_context();
+        let usb_service_id = USB_SERVICE.new_jobject(env)?;
+        let usb_man = env
+            .call_method(
+                context,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[(&usb_service_id).into()],
+            )
+            .get_object(env)?;
 
-    let usb_service = USB_SERVICE.new_jobject(env).map_err(jerr)?;
-    let usb_man = env
-        .call_method(
-            context,
-            "getSystemService",
-            "(Ljava/lang/String;)Ljava/lang/Object;",
-            &[(&usb_service).into()],
-        )
-        .get_object(env)
-        .map_err(jerr)?;
-
-    if !usb_man.is_null() {
-        Ok(env.new_global_ref(&usb_man).map_err(jerr)?)
-    } else {
-        Err(Error::new(ErrorKind::Unsupported, "USB_SERVICE not found"))
-    }
+        let result = if !usb_man.is_null() {
+            Ok(env.new_global_ref(&usb_man)?)
+        } else {
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                "USB system service not found",
+            ))
+        };
+        Ok(result)
+    })
+    .map_err(jerr)?
 }
 
 /// Checks if the Android context is an activity opened by an intent of
 /// `android.hardware.usb.action.USB_DEVICE_ATTACHED`. If so, it takes the `DeviceInfo`
 /// for the caller to open the device.
-///
-/// Please check it only on startup, in this case `has_permission()` usually returns `true`.
-/// Otherwise, it might keep a invalid value after disconnection, but the permission is lost
-/// even if the device connects again and gets the same filesystem path.
 pub fn check_attached_intent() -> Result<DeviceInfo, Error> {
     // Note: `getIntent()` and `setIntent()` are functions of `Activity` (not `Context`)
-    let env = &mut jni_attach_vm().map_err(jerr)?;
-    let activity = android_context();
+    let dev_info = jni_with_env(|env| {
+        let activity = android_context();
 
-    // the Intent instance is taken from Activity by getIntent()
-    let intent_startup = env
-        .call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])
-        .get_object(env)
-        .map_err(jerr)?;
-    // checks if the action of current intent is ACTION_USB_DEVICE_ATTACHED
-    let action_startup =
-        BroadcastReceiver::get_intent_action(&intent_startup, env).map_err(jerr)?;
-    if action_startup.trim() != ACTION_USB_DEVICE_ATTACHED {
-        // set the intent back, may fail
-        let _ = env
-            .call_method(
-                activity,
-                "setIntent",
-                "(Landroid/content/Intent;)V",
-                &[(&intent_startup).into()],
-            )
-            .clear_ex();
-        return Err(Error::from(ErrorKind::NotFound));
-    }
-    let dev_info = get_extra_device(&intent_startup)?;
-    if dev_info.check_connection() {
+        // the Intent instance is taken from Activity by getIntent()
+        let intent_startup = env
+            .call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])
+            .get_object(env)?;
+        // checks if the action of current intent is ACTION_USB_DEVICE_ATTACHED
+        let action_startup = BroadcastReceiver::get_intent_action(&intent_startup, env)?;
+        if action_startup.trim() != ACTION_USB_DEVICE_ATTACHED {
+            return Ok(Err(Error::from(ErrorKind::NotFound)));
+        }
+        Ok(get_extra_device(&intent_startup, env))
+    })
+    .map_err(jerr)??;
+    if dev_info.check_connection() && dev_info.has_permission()? {
         Ok(dev_info)
     } else {
         Err(Error::from(ErrorKind::NotConnected))
     }
 }
 
-fn get_extra_device(intent: &JObject<'_>) -> Result<DeviceInfo, Error> {
-    let env = &mut jni_attach_vm().map_err(jerr)?;
+fn get_extra_device(intent: &JObject<'_>, env: &mut jni::JNIEnv<'_>) -> Result<DeviceInfo, Error> {
     let extra_device = EXTRA_DEVICE.new_jobject(env).map_err(jerr)?;
     let java_dev = env
         .call_method(
@@ -105,7 +95,7 @@ fn get_extra_device(intent: &JObject<'_>) -> Result<DeviceInfo, Error> {
         .map_err(jerr)?;
 
     if !java_dev.is_null() {
-        DeviceInfo::build(env, &java_dev)
+        DeviceInfo::build(env, &java_dev).map_err(jerr)
     } else {
         Err(Error::new(
             ErrorKind::NotFound,
@@ -169,26 +159,22 @@ impl futures_core::Stream for HotplugWatch {
     ) -> task::Poll<Option<Self::Item>> {
         // `BroadcastWaiter` implementation makes `Ready(None)` impossible here
         if let task::Poll::Ready(Some(intent)) = self.waiter.poll_next(cx) {
-            let Ok(env) = &mut jni_attach_vm() else {
-                return task::Poll::Ready(None); // almost impossible
-            };
-            let Ok(action) = BroadcastWaiter::get_intent_action(&intent, env) else {
-                return task::Poll::Ready(None); // almost impossible
-            };
-            match action.trim() {
-                ACTION_USB_DEVICE_ATTACHED => {
-                    let Ok(dev) = get_extra_device(intent.as_obj()) else {
-                        return task::Poll::Ready(None);
-                    };
-                    task::Poll::Ready(Some(HotplugEvent::Connected(dev)))
-                }
-                ACTION_USB_DEVICE_DETACHED => {
-                    let Ok(dev) = get_extra_device(intent.as_obj()) else {
-                        return task::Poll::Ready(None);
-                    };
-                    task::Poll::Ready(Some(HotplugEvent::Disconnected(dev)))
-                }
-                _ => task::Poll::Pending,
+            let result = jni_with_env(|env| {
+                let action = BroadcastWaiter::get_intent_action(&intent, env)?;
+                Ok(match action.trim() {
+                    ACTION_USB_DEVICE_ATTACHED => get_extra_device(intent.as_obj(), env)
+                        .ok()
+                        .map(HotplugEvent::Connected),
+                    ACTION_USB_DEVICE_DETACHED => get_extra_device(intent.as_obj(), env)
+                        .ok()
+                        .map(HotplugEvent::Disconnected),
+                    _ => None,
+                })
+            });
+            if let Ok(Some(event)) = result {
+                task::Poll::Ready(Some(event))
+            } else {
+                task::Poll::Pending
             }
         } else {
             task::Poll::Pending
@@ -215,14 +201,15 @@ impl DeviceInfo {
     /// Returns true if the caller has permission to access the device.
     pub fn has_permission(&self) -> Result<bool, Error> {
         let usb_man = usb_manager()?;
-        let env = &mut jni_attach_vm().map_err(jerr)?;
-        env.call_method(
-            usb_man,
-            "hasPermission",
-            "(Landroid/hardware/usb/UsbDevice;)Z",
-            &[self.internal.as_obj().into()],
-        )
-        .get_boolean()
+        jni_with_env(|env| {
+            env.call_method(
+                usb_man,
+                "hasPermission",
+                "(Landroid/hardware/usb/UsbDevice;)Z",
+                &[self.internal.as_obj().into()],
+            )
+            .get_boolean()
+        })
         .map_err(jerr)
     }
 
@@ -249,43 +236,45 @@ impl DeviceInfo {
         if self.has_permission()? {
             return Ok(None);
         }
+
         let usb_man = usb_manager()?;
-        let env = &mut jni_attach_vm().map_err(jerr)?;
-        let context = android_context();
+        jni_with_env(|env| {
+            let context = android_context();
 
-        let str_perm = ACTION_USB_PERMISSION.new_jobject(env).map_err(jerr)?;
-        let intent = env
-            .new_object(
-                "android/content/Intent",
-                "(Ljava/lang/String;)V",
-                &[(&str_perm).into()],
+            let str_perm = ACTION_USB_PERMISSION.new_jobject(env)?;
+            let intent = env
+                .new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;)V",
+                    &[(&str_perm).into()],
+                )
+                .auto_local(env)?;
+
+            let flags = if android_api_level() < 31 {
+                0 // should it be FLAG_IMMUTABLE since API 23?
+            } else {
+                0x02000000 // FLAG_MUTABLE (since API 31, Android 12)
+            };
+            let pending = env
+                .call_static_method(
+                    "android/app/PendingIntent",
+                    "getBroadcast",
+                    "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+                    &[context.into(), 0_i32.into(), (&intent).into(), flags.into()],
+                )
+                .get_object(env)?;
+
+            env.call_method(
+                usb_man,
+                "requestPermission",
+                "(Landroid/hardware/usb/UsbDevice;Landroid/app/PendingIntent;)V",
+                &[(&self.internal.as_obj()).into(), (&pending).into()],
             )
-            .auto_local(env)
-            .map_err(jerr)?;
+            .clear_ex()?;
 
-        let flags = if android_api_level() < 31 {
-            0 // should it be FLAG_IMMUTABLE since API 23?
-        } else {
-            0x02000000 // FLAG_MUTABLE (since API 31, Android 12)
-        };
-        let pending = env
-            .call_static_method(
-                "android/app/PendingIntent",
-                "getBroadcast",
-                "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
-                &[context.into(), 0_i32.into(), (&intent).into(), flags.into()],
-            )
-            .get_object(env)
-            .map_err(jerr)?;
-
-        env.call_method(
-            usb_man,
-            "requestPermission",
-            "(Landroid/hardware/usb/UsbDevice;Landroid/app/PendingIntent;)V",
-            &[(&self.internal).into(), (&pending).into()],
-        )
-        .clear_ex()
-        .map_err(|_| Error::other("Unexpected error from `requestPermission()`"))?;
+            Ok(())
+        })
+        .map_err(jerr)?;
 
         if self.has_permission()? {
             return Ok(None); // almost impossible
@@ -302,12 +291,25 @@ impl DeviceInfo {
 
     /// Opens the device. Returns error `PermissionDenied` if the permission is not granted.
     pub fn open_device(&self) -> Result<nusb::Device, Error> {
+        if !self.check_connection() {
+            return Err(Error::new(
+                ErrorKind::NotConnected,
+                "the device has been disconnected",
+            ));
+        }
         if !self.has_permission()? {
             return Err(Error::from(ErrorKind::PermissionDenied));
         }
-        let raw_fd = {
-            let usb_man = usb_manager()?;
-            let env = &mut jni_attach_vm().map_err(jerr)?;
+
+        jni_with_env(|env| {
+            let usb_man = match usb_manager() {
+                Ok(man) => man,
+                Err(e) => return Ok(Err(e)),
+            };
+            // Another thread executing `open_device` will block here, until the guard
+            // for the current thread is dropped after `LinuxDevice::create_inner`.
+            let _guard = env.lock_obj(usb_man).unwrap();
+
             let conn = env
                 .call_method(
                     usb_man,
@@ -315,20 +317,25 @@ impl DeviceInfo {
                     "(Landroid/hardware/usb/UsbDevice;)Landroid/hardware/usb/UsbDeviceConnection;",
                     &[(&self.internal).into()],
                 )
-                .get_object(env)
-                .map_err(jerr)?;
+                .get_object(env)?;
             if conn.is_null() {
-                return Err(Error::new(ErrorKind::NotFound, "`openDevice()` failed`"));
+                return Ok(Err(Error::new(
+                    ErrorKind::NotFound,
+                    "`UsbManager.openDevice()` failed`",
+                )));
             }
-            env.call_method(&conn, "getFileDescriptor", "()I", &[])
-                .get_int()
-                .map_err(jerr)?
-        };
-        // Safety: `close()` is not called automatically when the JNI `AutoLocal` of `conn`
-        // and the corresponding Java object is destroyed. (check `UsbDeviceConnection` source)
-        use std::os::fd::*;
-        let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd as RawFd) };
-        nusb::Device::from_fd(owned_fd)
+            let raw_fd = env
+                .call_method(&conn, "getFileDescriptor", "()I", &[])
+                .get_int()?;
+
+            // Safety: `close()` is not called automatically when the JNI `AutoLocal` of `conn`
+            // and the corresponding Java object is destroyed. (check `UsbDeviceConnection` source)
+            use std::os::fd::*;
+            log::debug!("Wrapping fd {raw_fd} as usbfs device");
+            let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd as RawFd) };
+            Ok(nusb::Device::from_fd(owned_fd))
+        })
+        .map_err(jerr)?
     }
 }
 
@@ -370,29 +377,33 @@ impl std::future::Future for PermissionRequest {
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
         // `BroadcastWaiter` implementation makes `Ready(None)` impossible here
         if let task::Poll::Ready(Some(intent)) = self.waiter.poll_next(cx) {
-            let Ok(env) = &mut jni_attach_vm() else {
-                return task::Poll::Ready(false); // almost impossible
-            };
-            let Ok(dev_info) = get_extra_device(intent.as_obj()) else {
-                return task::Poll::Ready(false);
-            };
-            if dev_info == self.dev_info {
-                let Ok(extra_name) = EXTRA_PERMISSION_GRANTED.new_jobject(env) else {
-                    return task::Poll::Ready(false); // almost impossible
+            let result = jni_with_env(|env| {
+                let Ok(dev_info) = get_extra_device(intent.as_obj(), env) else {
+                    return Ok(None);
                 };
-                let granted = env
-                    .call_method(
-                        &intent,
-                        "getBooleanExtra",
-                        "(Ljava/lang/String;Z)Z",
-                        &[(&extra_name).into(), false.into()],
-                    )
-                    .get_boolean()
-                    .unwrap_or(false);
-                let _ = self.waiter.receiver().unregister();
+                if dev_info == self.dev_info {
+                    let extra_name = EXTRA_PERMISSION_GRANTED.new_jobject(env)?;
+                    let granted = env
+                        .call_method(
+                            &intent,
+                            "getBooleanExtra",
+                            "(Ljava/lang/String;Z)Z",
+                            &[(&extra_name).into(), false.into()],
+                        )
+                        .get_boolean()
+                        .unwrap_or(false);
+                    let _ = self.waiter.receiver().unregister();
+                    Ok(Some(granted))
+                } else {
+                    Ok(None)
+                }
+            });
+            if let Ok(Some(granted)) = result {
                 task::Poll::Ready(granted)
-            } else {
+            } else if let Ok(None) = result {
                 task::Poll::Pending
+            } else {
+                task::Poll::Ready(false)
             }
         } else {
             task::Poll::Pending

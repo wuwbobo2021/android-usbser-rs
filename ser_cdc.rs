@@ -67,9 +67,9 @@ impl CdcSerial {
             let endps: Vec<_> = alt.endpoints().collect();
             let endp_r = endps.iter().find(|endp| endp.direction() == Direction::In);
             let endp_w = endps.iter().find(|endp| endp.direction() == Direction::Out);
-            if endp_r.is_some() && endp_w.is_some() {
-                addr_r = Some(endp_r.unwrap().address());
-                addr_w = Some(endp_w.unwrap().address());
+            if let (Some(endp_r), Some(endp_w)) = (endp_r, endp_w) {
+                addr_r = Some(endp_r.address());
+                addr_w = Some(endp_w.address());
                 break;
             }
         }

@@ -6,18 +6,20 @@ use jni_min_helper::*;
 /// Enumerates for all USB devices via Android Java API.
 pub fn list_devices() -> Result<Vec<DeviceInfo>, Error> {
     let usb_man = usb_manager()?;
-    let env = &mut jni_attach_vm().map_err(jerr)?;
     let mut devices = Vec::new();
-    let ref_dev_list = env
-        .call_method(usb_man, "getDeviceList", "()Ljava/util/HashMap;", &[])
-        .get_object(env)
-        .map_err(jerr)?;
-    let map_dev = env.get_map(&ref_dev_list).map_err(jerr)?;
-    let mut iter_dev = map_dev.iter(env).map_err(jerr)?;
-    while let Some((name, dev)) = iter_dev.next(env).map_err(jerr)? {
-        devices.push(DeviceInfo::build(env, &dev)?);
-        drop((env.auto_local(name), env.auto_local(dev)));
-    }
+    jni_with_env(|env| {
+        let ref_dev_list = env
+            .call_method(usb_man, "getDeviceList", "()Ljava/util/HashMap;", &[])
+            .get_object(env)?;
+        let map_dev = env.get_map(&ref_dev_list)?;
+        let mut iter_dev = map_dev.iter(env)?;
+        while let Some((name, dev)) = iter_dev.next(env)? {
+            devices.push(DeviceInfo::build(env, &dev)?);
+            drop((env.auto_local(name), env.auto_local(dev)));
+        }
+        Ok(())
+    })
+    .map_err(jerr)?;
     Ok(devices)
 }
 
@@ -66,8 +68,8 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    pub(crate) fn build(env: &mut JNIEnv, dev: &JObject<'_>) -> Result<Self, Error> {
-        let num_interfaces = get_int_field(env, dev, "getInterfaceCount")? as u8;
+    pub(crate) fn build(env: &mut JNIEnv, dev: &JObject<'_>) -> Result<Self, jni::errors::Error> {
+        let num_interfaces = get_int_val(env, dev, "getInterfaceCount")? as u8;
         let mut interface_refs = Vec::new();
         for i in 0..num_interfaces {
             interface_refs.push(
@@ -77,20 +79,19 @@ impl DeviceInfo {
                     "(I)Landroid/hardware/usb/UsbInterface;",
                     &[(i as jint).into()],
                 )
-                .get_object(env)
-                .map_err(jerr)?,
+                .get_object(env)?,
             );
         }
         let mut info = Self {
-            internal: env.new_global_ref(dev).map_err(jerr)?,
+            internal: env.new_global_ref(dev)?,
 
-            vendor_id: get_int_field(env, dev, "getVendorId")? as u16,
-            product_id: get_int_field(env, dev, "getProductId")? as u16,
-            class: get_int_field(env, dev, "getDeviceClass")? as u8,
-            subclass: get_int_field(env, dev, "getDeviceSubclass")? as u8,
-            protocol: get_int_field(env, dev, "getDeviceProtocol")? as u8,
+            vendor_id: get_int_val(env, dev, "getVendorId")? as u16,
+            product_id: get_int_val(env, dev, "getProductId")? as u16,
+            class: get_int_val(env, dev, "getDeviceClass")? as u8,
+            subclass: get_int_val(env, dev, "getDeviceSubclass")? as u8,
+            protocol: get_int_val(env, dev, "getDeviceProtocol")? as u8,
 
-            path_name: get_string_field(env, dev, "getDeviceName")?,
+            path_name: get_string_val(env, dev, "getDeviceName")?,
             manufacturer_string: None,
             product_string: None,
             version: None,
@@ -100,22 +101,22 @@ impl DeviceInfo {
                 let mut interfaces = Vec::new();
                 for interface in interface_refs.into_iter() {
                     interfaces.push(InterfaceInfo {
-                        interface_number: get_int_field(env, &interface, "getId")? as u8,
-                        class: get_int_field(env, &interface, "getInterfaceClass")? as u8,
-                        sub_class: get_int_field(env, &interface, "getInterfaceSubclass")? as u8,
-                        protocol: get_int_field(env, &interface, "getInterfaceProtocol")? as u8,
-                        num_endpoints: get_int_field(env, &interface, "getEndpointCount")? as u8,
+                        interface_number: get_int_val(env, &interface, "getId")? as u8,
+                        class: get_int_val(env, &interface, "getInterfaceClass")? as u8,
+                        sub_class: get_int_val(env, &interface, "getInterfaceSubclass")? as u8,
+                        protocol: get_int_val(env, &interface, "getInterfaceProtocol")? as u8,
+                        num_endpoints: get_int_val(env, &interface, "getEndpointCount")? as u8,
                     });
                 }
                 interfaces
             },
         };
         if android_api_level() >= 21 {
-            info.version = Some(get_string_field(env, dev, "getVersion")?);
-            info.manufacturer_string = get_string_field(env, dev, "getManufacturerName").ok();
-            info.product_string = get_string_field(env, dev, "getProductName").ok();
+            info.version = Some(get_string_val(env, dev, "getVersion")?);
+            info.manufacturer_string = get_string_val(env, dev, "getManufacturerName").ok();
+            info.product_string = get_string_val(env, dev, "getProductName").ok();
             info.serial_number = if android_api_level() < 29 {
-                get_string_field(env, dev, "getSerialNumber").ok()
+                get_string_val(env, dev, "getSerialNumber").ok()
             } else {
                 // Avoid printing `java.lang.SecurityException: User has not given permission...`
                 env.call_method(dev, "getSerialNumber", "()Ljava/lang/String;", &[])
@@ -204,15 +205,20 @@ impl std::fmt::Debug for InterfaceInfo {
 
 // These functions call java methods without parameter. Error::Other on failure.
 #[inline(always)]
-fn get_int_field(env: &mut JNIEnv, dev: &JObject<'_>, method: &str) -> Result<jint, Error> {
-    env.call_method(dev, method, "()I", &[])
-        .get_int()
-        .map_err(jerr)
+fn get_int_val(
+    env: &mut JNIEnv,
+    dev: &JObject<'_>,
+    method: &str,
+) -> Result<jint, jni::errors::Error> {
+    env.call_method(dev, method, "()I", &[]).get_int()
 }
 #[inline(always)]
-fn get_string_field(env: &mut JNIEnv, dev: &JObject<'_>, method: &str) -> Result<String, Error> {
+fn get_string_val(
+    env: &mut JNIEnv,
+    dev: &JObject<'_>,
+    method: &str,
+) -> Result<String, jni::errors::Error> {
     env.call_method(dev, method, "()Ljava/lang/String;", &[])
         .get_object(env)
         .and_then(|o| o.get_string(env))
-        .map_err(jerr)
 }

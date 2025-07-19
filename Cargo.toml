@@ -1,6 +1,6 @@
 [package]
 name = "android-usbser"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["wuwbobo2021 <wuwbobo@outlook.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -12,11 +12,8 @@ Android host driver for USB serial adapters, currently works with CDC-ACM device
 keywords = ["usb", "serial", "serialport", "uart", "android"]
 categories = ["api-bindings", "hardware-support"]
 
-[package.metadata.android.sdk]
-min_sdk_version = 16
-target_sdk_version = 30
-
 [package.metadata.docs.rs]
+features = ["serialport"]
 default-target = "aarch64-linux-android"
 targets = [
     "aarch64-linux-android",
@@ -25,14 +22,18 @@ targets = [
     "x86_64-linux-android",
 ]
 
+[features]
+default = ["serialport"]
+serialport = ["dep:serialport"]
+
 [dependencies]
 log = "0.4"
 getset = "0.1"
 nusb = "0.1.12"
-serialport = "4.6"
 futures-core = "0.3"
 futures-lite = "2.5"
-jni-min-helper = { version = "0.2.6", features = ["futures"] }
+jni-min-helper = { version = "0.3", features = ["futures"] }
+serialport = { version = "4.7", optional = true }
 
 [lib]
 name = "android_usbser"
