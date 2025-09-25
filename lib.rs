@@ -13,7 +13,6 @@
 
 mod usb_conn;
 mod usb_info;
-mod usb_sync;
 
 #[cfg(feature = "serialport")]
 mod ser_cdc;
@@ -32,7 +31,6 @@ pub type Error = std::io::Error;
 pub mod usb {
     pub use crate::usb_conn::*;
     pub use crate::usb_info::*;
-    pub use crate::usb_sync::*;
     pub use crate::Error;
 
     /// Maps unexpected JNI errors to `std::io::Error` of `ErrorKind::Other`
@@ -57,9 +55,6 @@ pub mod usb {
     }
 }
 
-#[cfg(feature = "serialport")]
-use nusb::transfer::{Queue, RequestBuffer};
-
 /// Serial driver implementations inside this crate should implement this trait.
 ///
 /// TODO: add crate-level functions `probe() -> Result<Vec<DeviceInfo>, Error>`
@@ -68,10 +63,6 @@ use nusb::transfer::{Queue, RequestBuffer};
 pub trait UsbSerial: serialport::SerialPort {
     /// Sets baudrate, parity check mode, data bits and stop bits.
     fn configure(&mut self, conf: &SerialConfig) -> std::io::Result<()>;
-
-    /// Takes `nusb` transfer queues of the read endpoint and the write endpoint.
-    /// This can be called after serial configuration to do asynchronous operations.
-    fn into_queues(self) -> (Queue<RequestBuffer>, Queue<Vec<u8>>);
 
     #[doc(hidden)]
     fn sealer(_: private::Internal);

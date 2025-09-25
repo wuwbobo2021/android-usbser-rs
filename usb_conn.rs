@@ -3,6 +3,7 @@ use jni_min_helper::*;
 
 use crate::Error;
 use futures_lite::StreamExt;
+use nusb::MaybeFuture;
 use std::{io::ErrorKind, pin::Pin, task, time::Duration};
 
 use crate::usb::{jerr, list_devices, DeviceInfo};
@@ -333,7 +334,9 @@ impl DeviceInfo {
             use std::os::fd::*;
             log::debug!("Wrapping fd {raw_fd} as usbfs device");
             let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd as RawFd) };
-            Ok(nusb::Device::from_fd(owned_fd))
+            Ok(nusb::Device::from_fd(owned_fd)
+                .wait()
+                .map_err(|_| Error::from(ErrorKind::Other)))
         })
         .map_err(jerr)?
     }

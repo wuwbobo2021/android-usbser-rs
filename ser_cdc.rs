@@ -5,10 +5,14 @@ use std::{
 
 use crate::SerialConfig;
 use crate::{
-    usb::{self, DeviceInfo, InterfaceInfo, SyncReader, SyncWriter},
+    usb::{self, DeviceInfo, InterfaceInfo},
     UsbSerial,
 };
-use nusb::transfer::{Control, ControlType, Direction, Queue, Recipient, RequestBuffer};
+use nusb::transfer::{Bulk, ControlOut, ControlType, Direction, In, Out, Recipient};
+use nusb::{
+    io::{EndpointRead, EndpointWrite},
+    MaybeFuture,
+};
 
 use serialport::{DataBits, Parity, SerialPort, StopBits};
 
@@ -30,8 +34,8 @@ pub struct CdcSerial {
     usb_path_name: String,      // the name from `android.hardware.usb.UsbDevice`
     ctrl_index: u16,            // communication interface id as the control transfer index
     intr_comm: nusb::Interface, // communication interface keeper
-    reader: SyncReader,         // for the bulk IN endpoint of data interface
-    writer: SyncWriter,         // for the bulk OUT endpoint of data interface
+    reader: EndpointRead<Bulk>,
+    writer: EndpointWrite<Bulk>,
 
     timeout: Duration,              // standard `Read` and `Write` timeout
     ser_conf: Option<SerialConfig>, // keeps the latest settings
@@ -58,8 +62,12 @@ impl CdcSerial {
         let ctrl_index = intr_comm.interface_number() as u16;
 
         let device = dev_info.open_device()?;
-        let intr_comm = device.detach_and_claim_interface(intr_comm.interface_number())?;
-        let intr_data = device.detach_and_claim_interface(intr_data.interface_number())?;
+        let intr_comm = device
+            .detach_and_claim_interface(intr_comm.interface_number())
+            .wait()?;
+        let intr_data = device
+            .detach_and_claim_interface(intr_data.interface_number())
+            .wait()?;
 
         // Note: It doesn't select a setting with the highest bandwidth.
         let (mut addr_r, mut addr_w) = (None, None);
@@ -73,14 +81,16 @@ impl CdcSerial {
                 break;
             }
         }
-        let (reader, writer) = if let (Some(r), Some(w)) = (addr_r, addr_w) {
-            (
-                SyncReader::new(intr_data.bulk_in_queue(r)),
-                SyncWriter::new(intr_data.bulk_out_queue(w)),
-            )
-        } else {
-            return Err(Error::new(ErrorKind::NotFound, "Data endpoints not found"));
+
+        let (Some(addr_r), Some(addr_w)) = (addr_r, addr_w) else {
+            return Err(Error::from(ErrorKind::AddrNotAvailable));
         };
+
+        let mut reader = EndpointRead::new(intr_data.endpoint::<Bulk, In>(addr_r)?, 1024);
+        reader.set_read_timeout(timeout);
+
+        let mut writer = EndpointWrite::new(intr_data.endpoint::<Bulk, Out>(addr_w)?, 1024);
+        writer.set_write_timeout(timeout);
 
         Ok(Self {
             usb_path_name: dev_info.path_name().clone(),
@@ -137,45 +147,37 @@ impl CdcSerial {
 
     fn control_set(&self, request: u8, value: u16, buf: &[u8]) -> io::Result<()> {
         use nusb::transfer::TransferError;
-        let sz_write = self
-            .intr_comm
-            .control_out_blocking(
-                Control {
+        self.intr_comm
+            .control_out(
+                ControlOut {
                     control_type: ControlType::Class,
                     recipient: Recipient::Interface,
                     request,
                     value,
                     index: self.ctrl_index,
+                    data: buf,
                 },
-                buf,
                 self.timeout * 2,
             )
+            .wait()
             .map_err(|e| match e {
                 TransferError::Disconnected => Error::from(ErrorKind::NotConnected),
                 _ => Error::other(e),
-            })?;
-        if sz_write == buf.len() {
-            Ok(())
-        } else {
-            Err(Error::new(
-                ErrorKind::Interrupted,
-                "control_set(), wrong written size",
-            ))
-        }
+            })
     }
 }
 
 impl Read for CdcSerial {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buf, self.timeout)
+        self.reader.read(buf)
     }
 }
 
 impl Write for CdcSerial {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.writer.write(buf, self.timeout)
+        self.writer.write(buf)
     }
     /// Does nothing.
     fn flush(&mut self) -> io::Result<()> {
@@ -361,10 +363,6 @@ impl SerialPort for CdcSerial {
 impl UsbSerial for CdcSerial {
     fn configure(&mut self, conf: &SerialConfig) -> std::io::Result<()> {
         self.set_config(*conf)
-    }
-
-    fn into_queues(self) -> (Queue<RequestBuffer>, Queue<Vec<u8>>) {
-        (self.reader.into(), self.writer.into())
     }
 
     fn sealer(_: crate::private::Internal) {}
