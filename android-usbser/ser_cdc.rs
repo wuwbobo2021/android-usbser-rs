@@ -3,20 +3,13 @@ use std::{
     time::Duration,
 };
 
-use crate::{SerialConfig, UsbSerial};
-
-#[cfg(target_os = "android")]
-use crate::usb::{self, DeviceInfo, InterfaceInfo};
-
-#[cfg(not(target_os = "android"))]
-use nusb::{self as usb, DeviceInfo, InterfaceInfo};
-
-use nusb::transfer::{Bulk, ControlOut, ControlType, Direction, In, Out, Recipient};
 use nusb::{
     io::{EndpointRead, EndpointWrite},
-    MaybeFuture,
+    transfer::{Bulk, ControlOut, ControlType, Direction, In, Out, Recipient},
+    DeviceId, DeviceInfo, InterfaceInfo, MaybeFuture,
 };
 
+use crate::{SerialConfig, UsbSerial};
 use serialport::{DataBits, Parity, SerialPort, StopBits};
 
 const USB_INTR_CLASS_COMM: u8 = 0x02;
@@ -34,7 +27,7 @@ const SEND_BREAK: u8 = 0x23;
 /// Reference: *USB Class Definitions for Communication Devices, Version 1.1*,
 /// especially section 3.6.2.1, 5.2.3.2 and 6.2(.13).
 pub struct CdcSerial {
-    usb_path_name: String,      // the name from `android.hardware.usb.UsbDevice`
+    usb_dev_id: DeviceId,       // `nusb` device id
     ctrl_index: u16,            // communication interface id as the control transfer index
     intr_comm: nusb::Interface, // communication interface keeper
     reader: EndpointRead<Bulk>,
@@ -49,12 +42,7 @@ impl CdcSerial {
     /// Probes for CDC-ACM devices. It checks the current configuration of each device.
     /// Returns an empty vector if no device is found.
     pub fn probe() -> io::Result<Vec<DeviceInfo>> {
-        #[cfg(target_os = "android")]
-        let devs = usb::list_devices()?;
-
-        #[cfg(not(target_os = "android"))]
-        let devs = usb::list_devices().wait()?;
-
+        let devs = nusb::list_devices().wait()?;
         Ok(devs
             .into_iter()
             .filter(|dev| Self::find_interfaces(dev).is_some())
@@ -69,10 +57,6 @@ impl CdcSerial {
             .ok_or(Error::new(ErrorKind::InvalidInput, "Not a CDC-ACM device"))?;
         let ctrl_index = intr_comm.interface_number() as u16;
 
-        #[cfg(target_os = "android")]
-        let device = dev_info.open_device()?;
-
-        #[cfg(not(target_os = "android"))]
         let device = dev_info.open().wait()?;
 
         let intr_comm = device
@@ -105,14 +89,8 @@ impl CdcSerial {
         let mut writer = EndpointWrite::new(intr_data.endpoint::<Bulk, Out>(addr_w)?, 1024);
         writer.set_write_timeout(timeout);
 
-        #[cfg(target_os = "android")]
-        let usb_path_name = dev_info.path_name().clone();
-
-        #[cfg(not(target_os = "android"))]
-        let usb_path_name = String::new(); // TODO
-
         Ok(Self {
-            usb_path_name,
+            usb_dev_id: dev_info.id(),
             ctrl_index,
             intr_comm,
             reader,
@@ -127,13 +105,7 @@ impl CdcSerial {
     fn find_interfaces(dev_info: &DeviceInfo) -> Option<(InterfaceInfo, InterfaceInfo)> {
         let (comm, data) = (
             dev_info.interfaces().find(|intr| {
-                #[cfg(target_os = "android")]
-                let sub_class = intr.sub_class();
-
-                #[cfg(not(target_os = "android"))]
-                let sub_class = intr.subclass();
-
-                intr.class() == USB_INTR_CLASS_COMM && sub_class == USB_INTR_SUBCLASS_ACM
+                intr.class() == USB_INTR_CLASS_COMM && intr.subclass() == USB_INTR_SUBCLASS_ACM
             }),
             dev_info
                 .interfaces()
@@ -274,7 +246,7 @@ impl CdcSerial {
 
 impl SerialPort for CdcSerial {
     fn name(&self) -> Option<String> {
-        Some(self.usb_path_name.clone())
+        Some(format!("{:?}", self.usb_dev_id))
     }
 
     fn baud_rate(&self) -> serialport::Result<u32> {

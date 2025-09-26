@@ -6,10 +6,11 @@ publish = false
 
 [dependencies]
 log = "0.4"
+serialport = "4.7"
+nusb = { git = "https://github.com/wuwbobo2021/nusb.git", rev = "f4ff489" }
 android_logger = "0.15"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android-usbser = { path = "../android-usbser" }
-serialport = "4.7"
 
 [lib]
 name = "android_usb_cdc_test"
