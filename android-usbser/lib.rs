@@ -11,7 +11,9 @@
 //! The initial version of this crate performs USB transfers through JNI calls but not `nusb`,
 //! do not use it except you have encountered compatibility problems.
 
+#[cfg(target_os = "android")]
 mod usb_conn;
+#[cfg(target_os = "android")]
 mod usb_info;
 
 #[cfg(feature = "serialport")]
@@ -28,6 +30,7 @@ pub type Error = std::io::Error;
 /// Reference:
 /// - <https://developer.android.com/develop/connectivity/usb/host>
 /// - <https://developer.android.com/reference/android/hardware/usb/package-summary>
+#[cfg(target_os = "android")]
 pub mod usb {
     pub use crate::usb_conn::*;
     pub use crate::usb_info::*;

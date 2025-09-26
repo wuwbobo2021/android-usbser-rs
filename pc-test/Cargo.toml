@@ -1,0 +1,13 @@
+[package]
+name = "pc-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+android-usbser = { path = "../android-usbser" }
+serialport = "4.6"
+
+[[bin]]
+name = "pc-test"
+path = "main.rs"

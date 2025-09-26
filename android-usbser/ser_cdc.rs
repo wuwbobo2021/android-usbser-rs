@@ -1,13 +1,16 @@
 use std::{
-    io::{self, Error, ErrorKind, Read, Write},
+    io::{self, BufRead, Error, ErrorKind, Read, Write},
     time::Duration,
 };
 
-use crate::SerialConfig;
-use crate::{
-    usb::{self, DeviceInfo, InterfaceInfo},
-    UsbSerial,
-};
+use crate::{SerialConfig, UsbSerial};
+
+#[cfg(target_os = "android")]
+use crate::usb::{self, DeviceInfo, InterfaceInfo};
+
+#[cfg(not(target_os = "android"))]
+use nusb::{self as usb, DeviceInfo, InterfaceInfo};
+
 use nusb::transfer::{Bulk, ControlOut, ControlType, Direction, In, Out, Recipient};
 use nusb::{
     io::{EndpointRead, EndpointWrite},
@@ -46,7 +49,12 @@ impl CdcSerial {
     /// Probes for CDC-ACM devices. It checks the current configuration of each device.
     /// Returns an empty vector if no device is found.
     pub fn probe() -> io::Result<Vec<DeviceInfo>> {
+        #[cfg(target_os = "android")]
         let devs = usb::list_devices()?;
+
+        #[cfg(not(target_os = "android"))]
+        let devs = usb::list_devices().wait()?;
+
         Ok(devs
             .into_iter()
             .filter(|dev| Self::find_interfaces(dev).is_some())
@@ -61,7 +69,12 @@ impl CdcSerial {
             .ok_or(Error::new(ErrorKind::InvalidInput, "Not a CDC-ACM device"))?;
         let ctrl_index = intr_comm.interface_number() as u16;
 
+        #[cfg(target_os = "android")]
         let device = dev_info.open_device()?;
+
+        #[cfg(not(target_os = "android"))]
+        let device = dev_info.open().wait()?;
+
         let intr_comm = device
             .detach_and_claim_interface(intr_comm.interface_number())
             .wait()?;
@@ -92,8 +105,14 @@ impl CdcSerial {
         let mut writer = EndpointWrite::new(intr_data.endpoint::<Bulk, Out>(addr_w)?, 1024);
         writer.set_write_timeout(timeout);
 
+        #[cfg(target_os = "android")]
+        let usb_path_name = dev_info.path_name().clone();
+
+        #[cfg(not(target_os = "android"))]
+        let usb_path_name = String::new(); // TODO
+
         Ok(Self {
-            usb_path_name: dev_info.path_name().clone(),
+            usb_path_name,
             ctrl_index,
             intr_comm,
             reader,
@@ -108,14 +127,20 @@ impl CdcSerial {
     fn find_interfaces(dev_info: &DeviceInfo) -> Option<(InterfaceInfo, InterfaceInfo)> {
         let (comm, data) = (
             dev_info.interfaces().find(|intr| {
-                intr.class() == USB_INTR_CLASS_COMM && intr.sub_class() == USB_INTR_SUBCLASS_ACM
+                #[cfg(target_os = "android")]
+                let sub_class = intr.sub_class();
+
+                #[cfg(not(target_os = "android"))]
+                let sub_class = intr.subclass();
+
+                intr.class() == USB_INTR_CLASS_COMM && sub_class == USB_INTR_SUBCLASS_ACM
             }),
             dev_info
                 .interfaces()
                 .find(|intr| intr.class() == USB_INTR_CLASS_CDC_DATA),
         );
         if let (Some(comm), Some(data)) = (comm, data) {
-            Some((*comm, *data))
+            Some((comm.clone(), data.clone()))
         } else {
             None
         }
@@ -174,14 +199,25 @@ impl Read for CdcSerial {
     }
 }
 
+impl BufRead for CdcSerial {
+    #[inline]
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.reader.fill_buf()
+    }
+    #[inline]
+    fn consume(&mut self, amount: usize) {
+        self.reader.consume(amount)
+    }
+}
+
 impl Write for CdcSerial {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.writer.write(buf)
     }
-    /// Does nothing.
+
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.writer.flush()
     }
 }
 
@@ -296,6 +332,8 @@ impl SerialPort for CdcSerial {
     /// Sets timeout for standard `Read` and `Write` implementations to do USB bulk transfers.
     fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
         self.timeout = timeout;
+        self.reader.set_read_timeout(timeout);
+        self.writer.set_write_timeout(timeout);
         Ok(())
     }
 
