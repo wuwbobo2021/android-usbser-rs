@@ -2,8 +2,9 @@
 // To build a regular application, please use some UI framework like Slint (or Tauri?).
 
 use android_activity::{AndroidApp, MainEvent, PollEvent};
-use android_usbser::{CdcSerial, SerialConfig, usb};
+use android_usbser::{CdcSerial, SerialConfig};
 use log::{info, warn};
+use nusb::MaybeFuture;
 use serialport::SerialPort;
 use std::{
     io::{self, BufRead, Write},
@@ -19,10 +20,6 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("android_usb_cdc_test"),
     );
-
-    let usb_devs = usb::list_devices().unwrap();
-    info!("Connected USB devices found on startup:");
-    info!("{:#?}", usb_devs);
 
     let mut on_destroy = false;
     loop {
@@ -93,7 +90,7 @@ fn thread_delay_ms(ms: u64) -> bool {
 }
 
 fn serial_probe_loop() {
-    let mut startup_dev = usb::check_attached_intent().ok();
+    let mut startup_dev = nusb::check_startup_intent();
     loop {
         let usb_cdc_dev = if let Some(dev) = startup_dev.take() {
             info!("Got device from startup intent.");
@@ -111,19 +108,11 @@ fn serial_probe_loop() {
         };
 
         info!("{usb_cdc_dev:#?}");
-        info!("Opening {} ...", usb_cdc_dev.path_name());
+        info!("Opening {:?} ...", usb_cdc_dev.id());
 
         if let Some(perm_req) = usb_cdc_dev.request_permission().unwrap() {
-            for _ in 0..10 {
-                if perm_req.responsed() {
-                    break;
-                }
-                if !thread_delay_ms(1000) {
-                    return;
-                }
-                info!("Waiting...");
-            }
-        }
+            let _ = perm_req.wait();
+        };
         if !usb_cdc_dev.has_permission().unwrap() {
             info!("Permission not granted.");
             continue;

@@ -11,58 +11,16 @@
 //! The initial version of this crate performs USB transfers through JNI calls but not `nusb`,
 //! do not use it except you have encountered compatibility problems.
 
-#[cfg(target_os = "android")]
-mod usb_conn;
-#[cfg(target_os = "android")]
-mod usb_info;
-
-#[cfg(feature = "serialport")]
 mod ser_cdc;
-#[cfg(feature = "serialport")]
 pub use ser_cdc::*;
 
 /// Equals `std::io::Error`.
 pub type Error = std::io::Error;
 
-/// Android helper for `nusb`. It may be removed in version 0.3.0 (this is blocked by
-/// <https://github.com/kevinmehall/nusb/pull/150>).
-///
-/// Reference:
-/// - <https://developer.android.com/develop/connectivity/usb/host>
-/// - <https://developer.android.com/reference/android/hardware/usb/package-summary>
-#[cfg(target_os = "android")]
-pub mod usb {
-    pub use crate::usb_conn::*;
-    pub use crate::usb_info::*;
-    pub use crate::Error;
-
-    /// Maps unexpected JNI errors to `std::io::Error` of `ErrorKind::Other`
-    /// (`From<jni::errors::Error>` cannot be implemented for `std::io::Error`
-    /// here because of the orphan rule). Side effect: `jni_last_cleared_ex()`.
-    #[inline(always)]
-    pub(crate) fn jerr(err: jni_min_helper::jni::errors::Error) -> Error {
-        use jni::errors::Error::*;
-        use jni_min_helper::*;
-        if let JavaException = err {
-            let err = jni_clear_ex(err);
-            if let Some(ex) = jni_last_cleared_ex() {
-                jni_with_env(|env| Ok((ex.get_class_name(env)?, ex.get_throwable_msg(env)?)))
-                    .map(|(cls, msg)| Error::other(format!("{cls}: {msg}")))
-                    .unwrap_or(Error::other(err))
-            } else {
-                Error::other(err)
-            }
-        } else {
-            Error::other(err)
-        }
-    }
-}
-
 /// Serial driver implementations inside this crate should implement this trait.
 ///
 /// TODO: add crate-level functions `probe() -> Result<Vec<DeviceInfo>, Error>`
 /// and `open(dev_info: &DeviceInfo, timeout: Duration) -> Result<Box<dyn UsbSerial>, Error>`.
-#[cfg(feature = "serialport")]
 pub trait UsbSerial: serialport::SerialPort {
     /// Sets baudrate, parity check mode, data bits and stop bits.
     fn configure(&mut self, conf: &SerialConfig) -> std::io::Result<()>;
@@ -71,11 +29,9 @@ pub trait UsbSerial: serialport::SerialPort {
     fn sealer(_: private::Internal);
 }
 
-#[cfg(feature = "serialport")]
 use serialport::{DataBits, Parity, StopBits};
 
 /// Serial parameters including baudrate, parity check mode, data bits and stop bits.
-#[cfg(feature = "serialport")]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct SerialConfig {
     pub baud_rate: u32,
@@ -84,7 +40,6 @@ pub struct SerialConfig {
     pub stop_bits: StopBits,
 }
 
-#[cfg(feature = "serialport")]
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
@@ -96,7 +51,6 @@ impl Default for SerialConfig {
     }
 }
 
-#[cfg(feature = "serialport")]
 impl std::str::FromStr for SerialConfig {
     type Err = Error;
 
@@ -156,7 +110,6 @@ impl std::str::FromStr for SerialConfig {
     }
 }
 
-#[cfg(feature = "serialport")]
 impl std::fmt::Display for SerialConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let baud_rate = self.baud_rate;

@@ -6,4 +6,6 @@ Currently it is far from being feature-complete, and bug reports will be helpful
 
 Documentation: <https://docs.rs/android_usbser/latest>. Example usage can be found in the repository.
 
-TODO: Implement drivers for other serial adapters, for example, those with FTDI, Prolific, or CH34x chips.
+TODO:
+- Implement drivers for other serial adapters, for example, those with FTDI, Prolific, or CH34x chips.
+- Solve the known problem of not detecting device disconnection event after bumping `nusb` to v0.2.0.
