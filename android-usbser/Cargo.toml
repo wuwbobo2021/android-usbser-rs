@@ -7,7 +7,7 @@ authors = [
 ]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/wuwbobo2021/android-usbser-rs"
+repository = "https://github.com/uglyoldbob/android-usbser-rs"
 readme = "README.md"
 description = """
 Android host driver for USB serial adapters, currently working with CDC-ACM devices.
