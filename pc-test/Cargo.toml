@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 android-usbser = { path = "../android-usbser" }
-serialport = "4.6"
+serialport = "4.9"
 
 [[bin]]
 name = "pc-test"

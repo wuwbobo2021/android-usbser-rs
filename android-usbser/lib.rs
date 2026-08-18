@@ -8,7 +8,7 @@
 //!
 //! This crate uses `ndk_context::AndroidContext`, usually initialized by `android_activity`.
 //!
-//! The initial version of this crate performs USB transfers through JNI calls but not `nusb`,
+//! The 0.1.x versions of this crate performs USB transfers through JNI calls but not `nusb`,
 //! do not use it except you have encountered compatibility problems.
 
 mod ser_cdc;
@@ -26,7 +26,7 @@ pub trait UsbSerial: serialport::SerialPort {
     fn configure(&mut self, conf: &SerialConfig) -> std::io::Result<()>;
 
     #[doc(hidden)]
-    fn sealer(_: private::Internal);
+    fn sealer(&self, _: private::Internal);
 }
 
 use serialport::{DataBits, Parity, StopBits};

@@ -227,11 +227,11 @@ fn err_map_to_serialport(err: Error) -> serialport::Error {
     serialport::Error::new(kind, desc)
 }
 
-fn err_unsupported_op() -> serialport::Error {
-    err_map_to_serialport(Error::new(
+fn err_unsupported_op<T>() -> Result<T, serialport::Error> {
+    Err(err_map_to_serialport(Error::new(
         ErrorKind::Unsupported,
         "unsupported function in trait `Serialport`",
-    ))
+    )))
 }
 
 impl CdcSerial {
@@ -298,7 +298,7 @@ impl SerialPort for CdcSerial {
         &mut self,
         _flow_control: serialport::FlowControl,
     ) -> serialport::Result<()> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
 
     /// Sets timeout for standard `Read` and `Write` implementations to do USB bulk transfers.
@@ -325,19 +325,19 @@ impl SerialPort for CdcSerial {
 
     /// Unsupported.
     fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
     /// Unsupported.
     fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
     /// Unsupported.
     fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
     /// Unsupported.
     fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
 
     /// Returns 0 because no buffer is maintained here, and all operations are synchronous.
@@ -366,7 +366,7 @@ impl SerialPort for CdcSerial {
 
     /// Unsupported.
     fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-        Err(err_unsupported_op())
+        err_unsupported_op()
     }
 }
 
@@ -375,5 +375,5 @@ impl UsbSerial for CdcSerial {
         self.set_config(*conf)
     }
 
-    fn sealer(_: crate::private::Internal) {}
+    fn sealer(&self, _: crate::private::Internal) {}
 }

@@ -4,7 +4,6 @@
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 use android_usbser::{CdcSerial, SerialConfig};
 use log::{info, warn};
-use nusb::MaybeFuture;
 use serialport::SerialPort;
 use std::{
     io::{self, BufRead, Write},
@@ -17,7 +16,7 @@ use std::{
 fn android_main(app: AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
+            .with_max_level(log::LevelFilter::Info) // this can be set to `Debug`
             .with_tag("android_usb_cdc_test"),
     );
 
@@ -53,21 +52,15 @@ static FLAG_EXIT: Mutex<bool> = Mutex::new(false);
 fn start_serial_thread() {
     let mut th_hdl = SERIAL_THREAD.lock().unwrap();
     if th_hdl.is_none() {
-        th_hdl.replace(std::thread::spawn(serial_probe_loop));
+        th_hdl.replace(std::thread::spawn(serial_probe_thread));
         info!("Serial thread started.");
     }
 }
 
 fn stop_serial_thread() {
-    let mut th_hdl = SERIAL_THREAD.lock().unwrap();
-    if let Some(th_hdl) = th_hdl.take() {
+    let thread_exists = SERIAL_THREAD.lock().unwrap().is_some();
+    if thread_exists {
         *FLAG_EXIT.lock().unwrap() = true;
-        if th_hdl.join().is_ok() {
-            info!("Serial thread stopped normally.");
-        } else {
-            warn!("Failed to join serial thread.");
-        };
-        *FLAG_EXIT.lock().unwrap() = false;
     }
 }
 
@@ -75,7 +68,13 @@ fn stop_serial_thread() {
 
 #[inline(always)]
 fn check_flag_exit() -> bool {
-    *FLAG_EXIT.lock().unwrap()
+    let mut flag_exit = FLAG_EXIT.lock().unwrap();
+    if *flag_exit {
+        *flag_exit = false;
+        true
+    } else {
+        false
+    }
 }
 
 fn thread_delay_ms(ms: u64) -> bool {
@@ -89,13 +88,19 @@ fn thread_delay_ms(ms: u64) -> bool {
     true
 }
 
+fn serial_probe_thread() {
+    serial_probe_loop();
+    let _ = SERIAL_THREAD.lock().unwrap().take().unwrap();
+    info!("Serial thread exits normally.");
+}
+
 fn serial_probe_loop() {
-    let mut startup_dev = nusb::check_startup_intent();
     loop {
-        let usb_cdc_dev = if let Some(dev) = startup_dev.take() {
-            info!("Got device from startup intent.");
-            dev
-        } else {
+        if !thread_delay_ms(1000) {
+            return;
+        }
+
+        let usb_cdc_dev = {
             let usb_cdc_devs = CdcSerial::probe().unwrap();
             if usb_cdc_devs.is_empty() {
                 info!("No CDC serial adapter found.");
@@ -110,16 +115,13 @@ fn serial_probe_loop() {
         info!("{usb_cdc_dev:#?}");
         info!("Opening {:?} ...", usb_cdc_dev.id());
 
-        if let Some(perm_req) = usb_cdc_dev.request_permission().unwrap() {
-            let _ = perm_req.wait();
+        let mut serial = match CdcSerial::build(&usb_cdc_dev, Duration::from_millis(300)) {
+            Ok(serial) => serial,
+            Err(e) => {
+                info!("Failed to connect: {e}");
+                continue;
+            }
         };
-        if !usb_cdc_dev.has_permission().unwrap() {
-            info!("Permission not granted.");
-            continue;
-        }
-        info!("Got permission.");
-
-        let mut serial = CdcSerial::build(&usb_cdc_dev, Duration::from_millis(300)).unwrap();
         let initial_conf = "115200,N,8,1".parse().unwrap();
         info!("Opened, setting {initial_conf} ...");
         serial.set_config(initial_conf).unwrap();
